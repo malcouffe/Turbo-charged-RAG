@@ -1,11 +1,11 @@
 from typing import List, Optional, Dict, Any, Union
-from langchain.document_loaders import PyPDFLoader
+from langchain.docstore.document import Document as LangchainDocument
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import Chroma
+from langchain_community.vectorstores import Chroma
 from langchain.embeddings import OpenAIEmbeddings
-from markitdown import PdfProcessor
+from markitdown import MarkItDown
 from pptx import Presentation
-from docx import Document
+import docx  # Pour lire les fichiers DOCX
 import os
 import base64
 from datetime import datetime
@@ -23,14 +23,14 @@ class DocumentVectorStorePipeline:
         image_output_dir: Optional[str] = "extracted_images"
     ):
         """
-        Initialize the document processing pipeline.
-        
+        Initialise la pipeline de traitement de documents.
+
         Args:
-            openai_api_key: API key for OpenAI embeddings
-            chunk_size: Size of text chunks
-            chunk_overlap: Overlap between chunks
-            persist_directory: Directory to persist vector store (optional)
-            image_output_dir: Directory to save extracted images
+            openai_api_key: Clé API pour les embeddings OpenAI
+            chunk_size: Taille des morceaux de texte
+            chunk_overlap: Chevauchement entre les morceaux
+            persist_directory: Répertoire pour persister le vector store (optionnel)
+            image_output_dir: Répertoire où sauvegarder les images extraites
         """
         self.openai_client = OpenAI(api_key=openai_api_key)
         self.embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
@@ -46,33 +46,29 @@ class DocumentVectorStorePipeline:
 
     def analyze_image(self, image_path: str) -> str:
         """
-        Use GPT-4 Vision to analyze an image and return a textual description.
-        
+        Utilise GPT-4 Vision pour analyser une image et retourner une description textuelle.
+
         Args:
-            image_path: Path to the image file
-            
+            image_path: Chemin vers le fichier image
+
         Returns:
-            str: Detailed description of the image
+            str: Description détaillée de l'image
         """
-        # Read and encode image
+        # Lecture et encodage de l'image
         with Image.open(image_path) as img:
-            # Resize image if it's too large (max 2048px on longest side)
+            # Redimensionner l'image si nécessaire (max 2048px sur le côté le plus long)
             if max(img.size) > 2048:
                 ratio = 2048 / max(img.size)
                 new_size = tuple(int(dim * ratio) for dim in img.size)
                 img = img.resize(new_size, Image.Resampling.LANCZOS)
-            
-            # Convert to RGB if necessary
             if img.mode != 'RGB':
                 img = img.convert('RGB')
-            
-            # Save to bytes
             img_byte_arr = io.BytesIO()
             img.save(img_byte_arr, format='JPEG')
             img_byte_arr = img_byte_arr.getvalue()
             base64_image = base64.b64encode(img_byte_arr).decode('utf-8')
 
-        # Get description from GPT-4 Vision
+        # Récupérer la description depuis GPT-4 Vision
         response = self.openai_client.chat.completions.create(
             model="gpt-4-vision-preview",
             messages=[
@@ -89,83 +85,73 @@ class DocumentVectorStorePipeline:
             ],
             max_tokens=300
         )
-        
         return response.choices[0].message.content
 
     def process_image_for_vectorstore(self, image_metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Process an image and add its analysis to metadata.
-        
+        Traite une image et ajoute son analyse aux métadonnées.
+
         Args:
-            image_metadata: Dictionary containing image information
-            
+            image_metadata: Dictionnaire contenant les informations de l'image
+
         Returns:
-            Dict with updated metadata including image analysis
+            Dict avec les métadonnées mises à jour incluant l'analyse de l'image
         """
         image_path = image_metadata["image_path"]
         image_analysis = self.analyze_image(image_path)
-        
-        return {
-            **image_metadata,
-            "analysis": image_analysis
-        }
+        return {**image_metadata, "analysis": image_analysis}
 
     def extract_images(self, pdf_path: str) -> List[Dict[str, Any]]:
         """
-        Extract images from PDF using markitdown.
-        
+        Extrait les images d'un PDF en utilisant PyMuPDF (fitz).
+
         Args:
-            pdf_path: Path to the PDF file
-            
+            pdf_path: Chemin vers le fichier PDF
+
         Returns:
-            List of dictionaries containing image data and metadata
+            Liste de dictionnaires contenant les données et métadonnées des images
         """
-        processor = PdfProcessor()
+        import fitz  # PyMuPDF
+        doc = fitz.open(pdf_path)
         images = []
-        
-        # Process the PDF and extract images
-        pdf_content = processor.process_pdf(pdf_path)
-        
-        for idx, image in enumerate(pdf_content.images):
-            # Generate unique filename for the image
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            image_filename = f"image_{timestamp}_{idx}.png"
-            image_path = os.path.join(self.image_output_dir, image_filename)
-            
-            # Save the image
-            with open(image_path, "wb") as f:
-                f.write(base64.b64decode(image.base64_data))
-            
-            # Create image metadata
-            image_metadata = {
-                "image_path": image_path,
-                "page_number": image.page_number,
-                "width": image.width,
-                "height": image.height,
-                "caption": image.caption if hasattr(image, 'caption') else None
-            }
-            images.append(image_metadata)
-        
+        for page_index in range(len(doc)):
+            page = doc[page_index]
+            image_list = page.get_images(full=True)
+            for img_index, img in enumerate(image_list):
+                xref = img[0]
+                base_image = doc.extract_image(xref)
+                image_bytes = base_image["image"]
+                image_ext = base_image["ext"]
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                image_filename = f"image_{timestamp}_{page_index+1}_{img_index}.{image_ext}"
+                image_path = os.path.join(self.image_output_dir, image_filename)
+                with open(image_path, "wb") as f:
+                    f.write(image_bytes)
+                image_metadata = {
+                    "image_path": image_path,
+                    "page_number": page_index + 1,
+                    "width": base_image.get("width", None),
+                    "height": base_image.get("height", None),
+                    "caption": None
+                }
+                images.append(image_metadata)
         return images
 
     def process_pptx(self, file_path: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Process PowerPoint files, extracting text and images.
-        
+        Traite un fichier PowerPoint, en extrayant le texte et les images.
+
         Returns:
-            Tuple of (list of text chunks with metadata, list of image metadata)
+            Tuple de (liste de morceaux de texte avec métadonnées, liste de métadonnées d'images)
         """
         prs = Presentation(file_path)
         text_chunks = []
         images = []
-        
         for slide_number, slide in enumerate(prs.slides, 1):
-            # Extract text from slide
             slide_text = ""
             for shape in slide.shapes:
                 if hasattr(shape, "text"):
                     slide_text += shape.text + "\n"
-            
             if slide_text.strip():
                 text_chunks.append({
                     "content": slide_text.strip(),
@@ -174,38 +160,31 @@ class DocumentVectorStorePipeline:
                         "slide_number": slide_number
                     }
                 })
-            
-            # Extract images from slide
             for shape in slide.shapes:
                 if hasattr(shape, "image"):
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     image_filename = f"pptx_image_{timestamp}_{slide_number}.png"
                     image_path = os.path.join(self.image_output_dir, image_filename)
-                    
                     with open(image_path, "wb") as f:
                         f.write(shape.image.blob)
-                    
                     images.append({
                         "image_path": image_path,
                         "slide_number": slide_number,
                         "width": shape.width,
                         "height": shape.height
                     })
-        
         return text_chunks, images
 
     def process_docx(self, file_path: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Process Word documents, extracting text and images.
-        
+        Traite un fichier Word, en extrayant le texte et les images.
+
         Returns:
-            Tuple of (list of text chunks with metadata, list of image metadata)
+            Tuple de (liste de morceaux de texte avec métadonnées, liste de métadonnées d'images)
         """
-        doc = Document(file_path)
+        doc = docx.Document(file_path)
         text_chunks = []
         images = []
-        
-        # Extract text by paragraphs
         for para_number, paragraph in enumerate(doc.paragraphs, 1):
             if paragraph.text.strip():
                 text_chunks.append({
@@ -215,149 +194,97 @@ class DocumentVectorStorePipeline:
                         "paragraph_number": para_number
                     }
                 })
-        
-        # Extract images
         for rel in doc.part.rels.values():
             if "image" in rel.target_ref:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 image_filename = f"docx_image_{timestamp}_{os.path.basename(rel.target_ref)}"
                 image_path = os.path.join(self.image_output_dir, image_filename)
-                
                 with open(image_path, "wb") as f:
                     f.write(rel.target_part.blob)
-                
                 images.append({
                     "image_path": image_path,
                     "source": file_path
                 })
-        
         return text_chunks, images
 
     def process_document(self, file_path: str) -> tuple[Chroma, List[Dict[str, Any]]]:
         """
-        Process any supported document (PDF, PPTX, DOCX) and store it in the vector store.
+        Traite un document supporté (PDF, PPTX, DOCX) et le stocke dans le vector store.
         """
         file_extension = os.path.splitext(file_path)[1].lower()
+        analyzed_images = []
         
         if file_extension == '.pdf':
-            # For PDFs, we'll process text and images together to maintain context
+            # Utiliser PyPDFLoader pour extraire le texte
+            from langchain.document_loaders import PyPDFLoader
             loader = PyPDFLoader(file_path)
             pages = loader.load()
-            
-            # Extract and analyze images
+            # Extraction des images avec PyMuPDF
             images = self.extract_images(file_path)
             analyzed_images = [self.process_image_for_vectorstore(img) for img in images]
-            
-            # Group images by page
-            images_by_page = {}
-            for img in analyzed_images:
-                page_num = img['page_number']
-                if page_num not in images_by_page:
-                    images_by_page[page_num] = []
-                images_by_page[page_num].append(img)
-            
-            # Combine text with image analysis in context
+            # Fusion du texte et des analyses d'images
             enhanced_pages = []
             for page in pages:
-                page_num = page.metadata['page']
-                page_images = images_by_page.get(page_num, [])
-                
-                # Create combined text with image descriptions in context
                 enhanced_text = page.page_content
-                for img in page_images:
-                    # Add image analysis after the original text
-                    enhanced_text += f"\n\nImage Analysis: {img['analysis']}"
-                
+                for img in analyzed_images:
+                    enhanced_text += f"\n\nImage Analysis (page {img['page_number']}): {img['analysis']}"
                 enhanced_pages.append(
-                    Document(
+                    LangchainDocument(
                         page_content=enhanced_text,
-                        metadata={
-                            **page.metadata,
-                            "type": "combined",
-                            "images": page_images
-                        }
+                        metadata={**page.metadata, "type": "combined", "images": analyzed_images}
                     )
                 )
-            
-            # Split enhanced pages into chunks
             chunks = self.text_splitter.split_documents(enhanced_pages)
-            
+        
         elif file_extension == '.pptx':
             text_chunks, images = self.process_pptx(file_path)
             analyzed_images = [self.process_image_for_vectorstore(img) for img in images]
-            
-            # Group images by slide
             images_by_slide = {}
             for img in analyzed_images:
-                slide_num = img['slide_number']
-                if slide_num not in images_by_slide:
-                    images_by_slide[slide_num] = []
-                images_by_slide[slide_num].append(img)
-            
-            # Combine text with image analysis for each slide
+                images_by_slide.setdefault(img['slide_number'], []).append(img)
             enhanced_chunks = []
             for chunk in text_chunks:
                 slide_num = chunk['metadata']['slide_number']
                 slide_images = images_by_slide.get(slide_num, [])
-                
-                # Combine text with image descriptions
                 enhanced_text = chunk['content']
                 for img in slide_images:
                     enhanced_text += f"\n\nImage Analysis: {img['analysis']}"
-                
                 enhanced_chunks.append(
-                    Document(
+                    LangchainDocument(
                         page_content=enhanced_text,
-                        metadata={
-                            **chunk['metadata'],
-                            "type": "combined",
-                            "images": slide_images
-                        }
+                        metadata={**chunk['metadata'], "type": "combined", "images": slide_images}
                     )
                 )
             chunks = enhanced_chunks
-            
+        
         elif file_extension == '.docx':
             text_chunks, images = self.process_docx(file_path)
             analyzed_images = [self.process_image_for_vectorstore(img) for img in images]
-            
-            # Since Word documents don't have a clear image-paragraph mapping,
-            # we'll insert image descriptions at their approximate locations
             enhanced_chunks = []
-            images_per_chunk = len(analyzed_images) // len(text_chunks) + 1
-            
+            images_per_chunk = (len(analyzed_images) // len(text_chunks)) + 1 if text_chunks else 0
             for i, chunk in enumerate(text_chunks):
                 start_idx = i * images_per_chunk
                 end_idx = start_idx + images_per_chunk
                 chunk_images = analyzed_images[start_idx:end_idx]
-                
-                # Combine text with image descriptions
                 enhanced_text = chunk['content']
                 for img in chunk_images:
                     enhanced_text += f"\n\nImage Analysis: {img['analysis']}"
-                
                 enhanced_chunks.append(
-                    Document(
+                    LangchainDocument(
                         page_content=enhanced_text,
-                        metadata={
-                            **chunk['metadata'],
-                            "type": "combined",
-                            "images": chunk_images
-                        }
+                        metadata={**chunk['metadata'], "type": "combined", "images": chunk_images}
                     )
                 )
             chunks = enhanced_chunks
-            
+        
         else:
             raise ValueError(f"Unsupported file type: {file_extension}")
         
-        # Create vector store from enhanced chunks
         vector_store = Chroma.from_documents(
             documents=chunks,
             embedding=self.embeddings,
             persist_directory=self.persist_directory
         )
-        
         if self.persist_directory:
             vector_store.persist()
             
@@ -365,31 +292,23 @@ class DocumentVectorStorePipeline:
 
     def process_directory(self, directory_path: str) -> tuple[Chroma, Dict[str, List[Dict[str, Any]]]]:
         """
-        Process all supported documents in a directory.
+        Traite tous les documents supportés dans un répertoire.
         """
         all_chunks = []
         all_images = {}
-        
         supported_extensions = {'.pdf', '.pptx', '.docx'}
-        
         for filename in os.listdir(directory_path):
             file_extension = os.path.splitext(filename)[1].lower()
             if file_extension in supported_extensions:
                 file_path = os.path.join(directory_path, filename)
                 vector_store, images = self.process_document(file_path)
                 all_images[file_path] = images
-                
-                # Get documents from vector store
                 all_chunks.extend(vector_store.get())
-        
-        # Create combined vector store
         vector_store = Chroma.from_documents(
             documents=all_chunks,
             embedding=self.embeddings,
             persist_directory=self.persist_directory
         )
-        
         if self.persist_directory:
             vector_store.persist()
-            
-        return vector_store, all_images 
+        return vector_store, all_images
