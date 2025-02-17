@@ -23,4 +23,4 @@ isort>=5.12.0  # For import sorting
 mypy>=1.5.0   # For type checking
 
 # Web search
-smol-dev-js>=0.1.0  # For web search functionality 
+smolagent>=0.1.0  # For internet search functionality using smolagent 
