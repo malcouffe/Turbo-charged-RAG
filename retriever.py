@@ -12,7 +12,6 @@ class RetrieverTool(Tool):
         }
     }
     output_type = "string"
-    output_type = "string"
 
     def __init__(self, docs, **kwargs):
         super().__init__(**kwargs)
