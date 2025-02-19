@@ -4,18 +4,14 @@ from smolagents import Tool
 
 class RetrieverTool(Tool):
     name = "retriever"
-    description = (
-        "Utilise une recherche sémantique (BM25) pour récupérer "
-        "les parties de la documentation les plus pertinentes."
-    )
+    description = "Using semantic similarity, retrieves some documents from the knowledge base that have the closest embeddings to the input query."
     inputs = {
         "query": {
             "type": "string",
-            "description": (
-                "La requête de recherche (utilisez une forme affirmative plutôt qu'une question)."
-            ),
+            "description": "The query to perform. This should be semantically close to your target documents. Use the affirmative form rather than a question.",
         }
     }
+    output_type = "string"
     output_type = "string"
 
     def __init__(self, docs, **kwargs):
