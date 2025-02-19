@@ -1,4 +1,4 @@
-from smolagents import CodeAgent, OpenAIServerModel
+from smolagents import ToolCallingAgent, OpenAIServerModel
 from retriever import RetrieverTool
 from document_processor import DocumentVectorStorePipeline
 import os
@@ -14,13 +14,13 @@ pipeline = DocumentVectorStorePipeline(
     persist_directory="./vector_store",
 )
 
-file_path = "../data/pdf_1.pdf"
+file_path = "../data/2_LLM_prise_en_main.pdf"
 vector_store, docs = pipeline.process_document(file_path)
 
 # On passe ici la liste de documents récupérés dans le vector store
 retriever_tool = RetrieverTool(docs)
 
-agent = CodeAgent(
+agent = ToolCallingAgent(
     tools=[retriever_tool],
     model=model,
     max_steps=4,
