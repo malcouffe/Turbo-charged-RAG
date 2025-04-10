@@ -17,13 +17,13 @@ class RAGApp:
 
         # Initialize pipeline and agent
         self.pipeline = DocumentVectorStorePipeline(
-            openai_api_key=st.secrets["OPENAI_API_KEY"],
+            openai_api_key=os.environ["OPENAI_API_KEY"],
             persist_directory="./vector_store",
             image_output_dir="./extracted_images"
         )
         
         self.agent = EnhancedQueryAgent(
-            openai_api_key=st.secrets["OPENAI_API_KEY"],
+            openai_api_key=os.environ["OPENAI_API_KEY"],
             max_reformulations=3,
             search_mode="combined"
         )
