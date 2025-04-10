@@ -12,6 +12,7 @@ from datetime import datetime
 from openai import OpenAI
 from PIL import Image
 import io
+from image_analysis_cache import ImageAnalysisCache
 
 class DocumentVectorStorePipeline:
     def __init__(
@@ -20,7 +21,8 @@ class DocumentVectorStorePipeline:
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
         persist_directory: Optional[str] = None,
-        image_output_dir: Optional[str] = "extracted_images"
+        image_output_dir: Optional[str] = "extracted_images",
+        use_cache: bool = True
     ):
         """
         Initialize the document processing pipeline.
@@ -31,6 +33,7 @@ class DocumentVectorStorePipeline:
             chunk_overlap: Overlap between chunks
             persist_directory: Directory to persist vector store (optional)
             image_output_dir: Directory to save extracted images
+            use_cache: Whether to use image analysis cache
         """
         self.openai_client = OpenAI(api_key=openai_api_key)
         self.embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
@@ -42,6 +45,8 @@ class DocumentVectorStorePipeline:
         )
         self.persist_directory = persist_directory
         self.image_output_dir = image_output_dir
+        self.use_cache = use_cache
+        self.image_cache = ImageAnalysisCache() if use_cache else None
         os.makedirs(image_output_dir, exist_ok=True)
 
     def analyze_image(self, image_path: str) -> str:
@@ -54,6 +59,12 @@ class DocumentVectorStorePipeline:
         Returns:
             str: Detailed description of the image
         """
+        # Check cache first if enabled
+        if self.use_cache and self.image_cache:
+            cached_analysis = self.image_cache.get_analysis(image_path)
+            if cached_analysis:
+                return cached_analysis
+        
         # Read and encode image
         with Image.open(image_path) as img:
             # Resize image if it's too large (max 2048px on longest side)
@@ -90,7 +101,13 @@ class DocumentVectorStorePipeline:
             max_tokens=300
         )
         
-        return response.choices[0].message.content
+        analysis = response.choices[0].message.content
+        
+        # Save to cache if enabled
+        if self.use_cache and self.image_cache:
+            self.image_cache.add_analysis(image_path, analysis)
+        
+        return analysis
 
     def process_image_for_vectorstore(self, image_metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -392,4 +409,39 @@ class DocumentVectorStorePipeline:
         if self.persist_directory:
             vector_store.persist()
             
-        return vector_store, all_images 
+        return vector_store, all_images
+
+    def merge_vector_stores(self, existing_store: Chroma, new_store: Chroma) -> Chroma:
+        """
+        Merge a new vector store into an existing one.
+        
+        Args:
+            existing_store: The existing Chroma vector store
+            new_store: The new Chroma vector store to merge
+            
+        Returns:
+            The merged Chroma vector store
+        """
+        # Get documents from the new vector store
+        new_docs = []
+        for doc_id in new_store._collection.get()["ids"]:
+            result = new_store._collection.get([doc_id])
+            new_docs.append({
+                "document": result["documents"][0],
+                "metadata": result["metadatas"][0],
+                "embedding": result["embeddings"][0]
+            })
+        
+        # Add new documents to existing store
+        for doc in new_docs:
+            existing_store._collection.add(
+                documents=[doc["document"]],
+                embeddings=[doc["embedding"]],
+                metadatas=[doc["metadata"]]
+            )
+        
+        # Persist if needed
+        if self.persist_directory:
+            existing_store.persist()
+            
+        return existing_store
